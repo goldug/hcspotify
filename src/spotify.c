@@ -1,5 +1,6 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <psapi.h>
 #include <stdlib.h>
 #include <string.h>
 #include "hexchat-plugin.h"
@@ -8,42 +9,101 @@
 static hexchat_plugin *ph;   /* plugin handle */
 static char name[] = "Spotify Now Playing";
 static char desc[] = "Sends currently playing song in Spotify to the current channel.";
-static char version[] = "1.0";
+static char version[] = "1.1";
 static const char helpmsg[] = "Sends currently playing song in Spotify to the current channel. USAGE: /spotify";
+
+static char tempbuf[1024];
+int foundsomething = 0;
+
+int GetProcName(int procid, char* temp, int bufsiz)
+{
+	int returnval = -1;
+    // Get a handle to the process.
+    HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION |
+                                   PROCESS_VM_READ,
+                                   FALSE, procid);
+
+    // Get the process name.
+    if (NULL != hProcess)
+    {
+        HMODULE hMod;
+        DWORD cbNeeded;
+
+        if (EnumProcessModules(hProcess, &hMod, sizeof(hMod), &cbNeeded))
+        {
+            GetModuleBaseName(hProcess, hMod, temp, bufsiz);
+			return 0;
+        }
+    }
+    CloseHandle( hProcess );
+	
+	return returnval;
+}
+
+static BOOL EnumWindCallback(HWND hwnd, LPARAM lParam)
+{
+	int phandle;
+	unsigned long procid = GetWindowThreadProcessId(hwnd,&phandle);
+	
+	RealGetWindowClass (hwnd,&tempbuf,1024);
+	
+	if(strncmp(tempbuf,"Chrome_WidgetWin",16))
+		return TRUE;
+
+	GetProcName(phandle, tempbuf, 1024);
+	
+	if(strcmp(tempbuf,"Spotify.exe"))
+		return TRUE;
+	
+	wchar_t window_text[1024];
+	if (GetWindowTextW (hwnd, window_text, 1024))
+	{
+		if (wcscmp (window_text, L"Spotify") == 0)
+		{
+			foundsomething = 0;
+			return FALSE;
+		}
+
+		// UTF-16 to UTF-8
+		if (!WideCharToMultiByte (CP_UTF8, 0, window_text, -1, &tempbuf, sizeof(tempbuf), NULL, NULL))
+		{
+			foundsomething = -1;
+			return FALSE;
+		}
+		
+		foundsomething = 1;
+		
+		return FALSE;
+	}
+	return TRUE;
+}
+
 
 static int spotify_cb(char *word[], char *word_eol[], void *userdata)
 {
-	HWND hWnd = FindWindowW (L"SpotifyMainWindow", NULL);
-	wchar_t window_text[1024];
+	foundsomething = -2;
 
-	if (hWnd == NULL)
+	EnumWindows(EnumWindCallback,0);
+	
+	if(foundsomething == 1)
 	{
-		hexchat_print (ph, "Unable to find Spotify window.");
+		hexchat_commandf (ph, "me is now listening to: %s", tempbuf);
 		return HEXCHAT_EAT_ALL;
 	}
-
-	if (GetWindowTextW (hWnd, window_text, 1024))
+	else if(foundsomething == 0)
 	{
-		char utf8_title[2048], *title = utf8_title;
-
-		if (wcscmp (window_text, L"Spotify") == 0)
-		{
-			hexchat_print (ph, "Spotify is not playing anything right now.");
-			return HEXCHAT_EAT_ALL;
-		}
-
-		/* UTF-16 to UTF-8 */
-		if (!WideCharToMultiByte (CP_UTF8, 0, window_text, -1, &utf8_title, sizeof(utf8_title), NULL, NULL))
-		{
-			hexchat_print (ph, "Failed to convert song title to utf8");
-			return HEXCHAT_EAT_ALL;
-		}
-
-		/* Older versions have a prefix */
-		if (strncmp (title, "Spotify - ", 10) == 0)
-			title += 10;
-
-		hexchat_commandf (ph, "me is now listening to: %s", title);
+		hexchat_print (ph, "Spotify is not playing anything right now.");
+		return HEXCHAT_EAT_ALL;
+	}
+	else if(foundsomething == -1)
+	{
+		hexchat_print (ph, "Some error occured.");
+		return HEXCHAT_EAT_ALL;
+	}
+	else if(foundsomething == -2)
+	{
+		hexchat_print (ph, "Spotify not running or failed to detect.");
+		return HEXCHAT_EAT_ALL;
 	}
 	return HEXCHAT_EAT_ALL;
 }
